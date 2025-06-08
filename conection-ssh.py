@@ -3,6 +3,7 @@ import json
 import time
 import sys
 import select
+import re # Importamos el módulo de expresiones regulares
 
 # --- Carga de configuración (sin cambios) ---
 try:
@@ -27,51 +28,45 @@ COLOSSUS_HOST = colossus_config['hostname']
 COLOSSUS_USER = colossus_config['username']
 COLOSSUS_PASS = colossus_config['password']
 
-# --- NUEVA FUNCIÓN DE LECTURA INTERACTIVA ---
-def read_interactive_output(shell, stop_string=">>> ", timeout=3.0):
+
+# --- NUEVA FUNCIÓN PARA LIMPIAR CÓDIGOS ANSI ---
+def clean_ansi_codes(text):
     """
-    Lee la salida de un shell interactivo de forma más robusta.
-    Espera datos hasta que no llega nada nuevo durante 'timeout' segundos,
-    o hasta que encuentra el 'stop_string'.
+    Elimina las secuencias de escape ANSI (colores, movimiento de cursor, etc.) del texto.
     """
-    output = ""
-    start_time = time.time()
-    last_data_time = start_time
+    ansi_escape_pattern = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
+    return ansi_escape_pattern.sub('', text)
+
+
+def read_interactive_output(shell, stop_string=">>> ", timeout=3.0, debug=False):
+    """
+    Lee la salida de un shell interactivo.
+    Añadido un parámetro 'debug' para activar/desactivar los mensajes de depuración.
+    """
+    output_buffer = ""
+    last_data_time = time.time()
 
     while time.time() - last_data_time < timeout:
-        # select.select nos permite esperar datos sin bloquear el programa
-        # Esperamos como máximo 0.1 segundos antes de volver a comprobar el timeout
         r, _, _ = select.select([shell], [], [], 0.1)
         if r:
-            # Hay datos disponibles para leer
             try:
                 chunk = shell.recv(4096).decode('utf-8', errors='ignore')
                 if not chunk:
-                    # El canal se cerró
-                    print("\n[DEBUG] El canal SSH se ha cerrado.")
                     break
                 
-                # Imprimimos los datos crudos para depuración
-                # repr() muestra caracteres especiales como '\n', '\r', etc.
-                print(f"[DEBUG] Recibido: {repr(chunk)}")
+                if debug:
+                    print(f"[DEBUG] Recibido: {repr(chunk)}")
 
-                # Imprimimos la salida para el usuario en tiempo real
-                print(chunk, end='', flush=True)
+                output_buffer += chunk
+                last_data_time = time.time()
 
-                output += chunk
-                last_data_time = time.time() # Reiniciamos el temporizador de inactividad
-
-                # Si encontramos la cadena de parada, terminamos
-                if stop_string and output.strip().endswith(stop_string):
+                if stop_string and output_buffer.strip().endswith(stop_string):
                     break
-
             except Exception as e:
                 print(f"\n[ERROR] Error leyendo del shell: {e}")
                 break
-        
-        # Si no hay datos, el bucle continuará hasta que se agote el timeout
     
-    return output
+    return output_buffer
 
 
 if __name__ == '__main__':
@@ -98,25 +93,22 @@ if __name__ == '__main__':
         colossus_client.connect(hostname=COLOSSUS_HOST, username=COLOSSUS_USER, password=COLOSSUS_PASS, sock=proxy_channel)
         print("[+] ¡Conexión a Colossus establecida con éxito!")
 
-        # --- PASO 3 y 4: Shell interactiva (lógica mejorada) ---
+        # --- PASO 3 y 4: Shell interactiva con limpieza de salida ---
         print("\n[*] Abriendo shell interactiva en Colossus...")
-        shell = colossus_client.invoke_shell(width=120, height=40) # Damos un tamaño a la terminal virtual
+        shell = colossus_client.invoke_shell(width=120, height=40)
 
-        # Limpiamos el mensaje de bienvenida del servidor
         print("[*] Limpiando banner de bienvenida...")
         read_interactive_output(shell, stop_string=None, timeout=1.5)
 
-        # Ejecutar el comando de ollama
         ollama_command = f"ollama run {ollama_model}\n"
         print(f"\n[*] Ejecutando comando: {ollama_command.strip()}")
         shell.send(ollama_command)
-
-        # Esperamos a que ollama inicie y muestre su prompt ">>>"
+        
         print("[*] Esperando que Ollama inicie...")
-        read_interactive_output(shell, stop_string=">>> ", timeout=15) # Más tiempo por si descarga el modelo
+        read_interactive_output(shell, stop_string=">>> ", timeout=15) # Tiempo para que inicie Ollama
         
         print("\n[+] Ollama está listo. Por favor, introduce tu prompt.")
-        print("[i] Escribe '/bye' o 'exit' para terminar la sesión con Ollama y salir.")
+        print("[i] Escribe '/bye' o 'exit' para terminar la sesión y salir.")
 
         while True:
             user_prompt = input("\nTu prompt para Mistral: ")
@@ -125,30 +117,39 @@ if __name__ == '__main__':
                 time.sleep(1)
                 break
             
-            # Enviamos el prompt del usuario a la shell
             shell.send(user_prompt + "\n")
             
-            # --- LÓGICA DE LECTURA MEJORADA ---
-            # 1. Leemos la respuesta. La función esperará hasta que no haya más texto
-            #    llegando durante 'timeout' segundos. No buscamos ">>>" aquí.
-            print("\nRespuesta de Mistral:")
-            response = read_interactive_output(shell, stop_string=None, timeout=5.0)
+            # 1. Leer la salida cruda del shell
+            raw_output = read_interactive_output(shell, stop_string=None, timeout=5.0)
+
+            # 2. Limpiar la salida de códigos ANSI y otros artefactos de Ollama
+            clean_output = clean_ansi_codes(raw_output)
             
-            # 2. Después de obtener la respuesta, es probable que el prompt ">>>"
-            #    ya esté en el buffer. Hacemos una lectura rápida final para limpiarlo.
+            # 3. Procesar el texto para que sea más legible
+            # Ollama añade ">>> Send a message..." al final, lo eliminamos.
+            if ">>> Send a message" in clean_output:
+                clean_output = clean_output.split(">>> Send a message")[0]
+            
+            # Eliminamos los spinners de carga que puedan haber quedado
+            spinners = ['⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+            for char in spinners:
+                clean_output = clean_output.replace(char, '')
+            
+            # Imprimir la respuesta final y limpia
+            print("\nRespuesta de Mistral:")
+            print(clean_output.strip())
+            
+            # Limpiamos el buffer del prompt ">>>" que llega al final
             read_interactive_output(shell, stop_string=">>> ", timeout=1.0)
             
             print("-" * 30)
-            # El prompt para el usuario se vuelve a imprimir por el bucle `input()`
-
-        print("\n[*] Sesión con Ollama terminada.")
 
     except paramiko.AuthenticationException as e:
         print(f"\n[!] Error de autenticación: {e}. Revisa usuario/contraseña.")
     except Exception as e:
         print(f"\n[!] Ocurrió un error: {e}")
     finally:
-        print("[*] Cerrando conexiones...")
+        print("\n[*] Cerrando conexiones...")
         if colossus_client:
             colossus_client.close()
         if gateway_client:
