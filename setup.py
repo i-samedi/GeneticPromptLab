@@ -21,7 +21,8 @@ setup(
         'openai==1.34.0',
         'tqdm==4.66.4',
         'datasets==2.20.0',
-        'matplotlib==3.9.0'
+        'matplotlib==3.9.0',
+        'paramiko'
     ],
     classifiers=[
         'Development Status :: 3 - Alpha',
