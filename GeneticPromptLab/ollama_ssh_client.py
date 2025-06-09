@@ -103,6 +103,11 @@ class OllamaSSHClient:
         system_prompt = next((m['content'] for m in messages if m['role'] == 'system'), "")
         user_prompt = next((m['content'] for m in messages if m['role'] == 'user'), "")
         
+        print("\n=== PROMPTS ENVIADOS A OLLAMA ===")
+        print(f"System Prompt: {system_prompt}")
+        print(f"User Prompt: {user_prompt}")
+        print("================================\n")
+        
         # --- ESTRATEGIA FINAL: Pedir directamente el objeto de argumentos ---
         properties = function_template.get("parameters", {}).get("properties", {})
         example_obj = {}
@@ -170,6 +175,11 @@ class OllamaSSHClient:
                 raise ValueError("Invalid JSON format")
                 
             parsed_json = json.loads(json_string_repaired)
+            
+            print("\n=== PROMPT RECIBIDO DE OLLAMA ===")
+            if 'prompt' in parsed_json:
+                print(f"Prompt: {parsed_json['prompt']}")
+            print("================================\n")
             
             # Si la respuesta tiene una clave 'prompt', la devolvemos directamente
             if 'prompt' in parsed_json:
